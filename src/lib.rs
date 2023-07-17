@@ -11,7 +11,7 @@ use pyo3::{
 };
 
 mod asgi_spec;
-mod mp;
+pub mod mp;
 
 pub struct ServerInfo {
     pub host: String,
@@ -104,9 +104,10 @@ async fn actix_main(
     Ok(())
 }
 
-fn get_mppyfunc(
+fn setup_request_handler(
     python: Python<'_>,
     chchc: ipc_channel::ipc::IpcReceiver<HTTPScope>,
+    factory: bool,
 ) -> PyResult<Py<PyAny>> {
     let chan_rc = Arc::new(Mutex::new(chchc));
     let ffff = move |args: &PyTuple, _kwargs: Option<&PyDict>| -> PyResult<()> {
@@ -118,7 +119,10 @@ fn get_mppyfunc(
             let local_chan = arc_chan.lock().map_err(|err| {
                 PyValueError::new_err(format!("Cannot aquire lock for ipc. Cause: {}", err))
             })?;
-            let app = module.getattr(args[1].to_string().as_str())?.call0()?;
+            let mut app = module.getattr(args[1].to_string().as_str())?;
+            if factory {
+                app = app.call0()?;
+            }
             log::info!("Imported");
 
             loop {
@@ -131,7 +135,6 @@ fn get_mppyfunc(
                     }
                     Ok(msg) => {
                         log::info!("Recived under GIL, yolo.");
-                        // let dickt = PyDict::new(py);
                         let pythonized_msg = pythonize::pythonize(py, &msg)?;
                         let pydickt = pythonized_msg.downcast::<PyDict>(py)?;
                         let mut pyheders = Vec::new();
@@ -147,27 +150,18 @@ fn get_mppyfunc(
             }
         });
         Ok(())
-        // loop {
-        //     match chchc.recv() {
-        //         Err(err) => {
-        //             log::info!("Cannot shit: {}.", err);
-        //             return Ok(());
-        //         }
-        //         Ok(st) => {
-        //             log::info!("Received in python {}", st);
-        //         }
-        //     };
-        // }
     };
     Ok(pyo3::types::PyCFunction::new_closure(python, None, None, ffff)?.into_py(python))
 }
 
 #[pyfunction]
+#[pyo3(signature = (app_path, host="0.0.0.0", port=8000, workers=4, factory=false))]
 pub fn run(
-    app_path: String,
-    host: Option<String>,
-    port: Option<u16>,
-    workers: Option<usize>,
+    app_path: &str,
+    host: &str,
+    port: u16,
+    workers: usize,
+    factory: bool,
 ) -> PyResult<()> {
     let split: Vec<String> = app_path.split(":").map(String::from).collect();
     if split.len() != 2 {
@@ -176,19 +170,18 @@ pub fn run(
             app_path
         )));
     }
-    let workers_count = workers.unwrap_or(4);
     Python::with_gil(|py| {
         let mut mp = Process::new(py)?;
         let mut senders = Vec::new();
-        for _ in 0..workers_count {
-            let (s, r) = ipc_channel::ipc::channel()
+        for _ in 0..workers {
+            let (sender, receiver) = ipc_channel::ipc::channel()
                 .expect("Cannot create IPC channels for python-rust communication.");
             mp.spawn(
-                &get_mppyfunc(py, r)?,
+                &setup_request_handler(py, receiver, factory)?,
                 (split[0].clone(), split[1].clone()),
                 None,
             )?;
-            senders.push(s);
+            senders.push(sender);
         }
         let res = py.allow_threads(move || {
             let runtime = match actix_rt::Runtime::new() {
@@ -201,9 +194,9 @@ pub fn run(
                 Ok(val) => val,
             };
             match runtime.block_on(actix_main(
-                host.unwrap_or("0.0.0.0".into()),
-                port.unwrap_or(8000),
-                workers.unwrap_or(4),
+                host.into(),
+                port,
+                workers,
                 senders.clone(),
             )) {
                 Err(err) => {

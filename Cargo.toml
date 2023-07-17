@@ -15,7 +15,7 @@ anyhow = "1.0.71"
 fern = "0.6.2"
 ipc-channel = { version = "0.16.1", features = ["async"] }
 log = "0.4.19"
-pyo3 = { version = "0.19.1", features = ["serde"]}
+pyo3 = { version = "0.19.1", features = ["serde", "extension-module", "abi3-py38"]}
 pyo3-log = "0.8.3"
 pythonize = "0.19.0"
 serde = { version = "1.0.171", features = ["derive"] }

@@ -23,10 +23,6 @@ impl<'a> Process<'a> {
         })
     }
 
-    pub fn is_running(&self) -> bool {
-        !self.pool.is_empty()
-    }
-
     pub fn spawn(
         &mut self,
         f: impl IntoPy<Py<PyAny>>,
